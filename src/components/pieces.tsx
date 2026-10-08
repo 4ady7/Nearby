@@ -22,7 +22,10 @@ export function ReactionBar({
   const [current, setCurrent] = useState(reactions);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  useEffect(() => setCurrent(reactions), [reactions]);
+  const busyRef = useRef(false);
+  useEffect(() => {
+    if (!busyRef.current) setCurrent(reactions);
+  }, [reactions]);
 
   async function react(emoji: string) {
     if (busy) return;
@@ -33,6 +36,7 @@ export function ReactionBar({
         ? previous.filter((item) => !(item.mine && item.emoji === emoji))
         : [...previous.filter((item) => !item.mine), { emoji, mine: true }],
     );
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -47,6 +51,7 @@ export function ReactionBar({
       setCurrent(previous);
       setError(caught instanceof ApiError ? caught.message : "That reaction didn't land.");
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -273,7 +278,15 @@ function MomentBody({ moment }: { moment: MomentView }) {
   return <p className="body">{moment.body}</p>;
 }
 
-export function AnswerForm({ questionId, initial = "" }: { questionId: string; initial?: string }) {
+export function AnswerForm({
+  questionId,
+  initial = "",
+  updatedAt = 0,
+}: {
+  questionId: string;
+  initial?: string;
+  updatedAt?: number;
+}) {
   const router = useRouter();
   const storageKey = `between:answer:${questionId}`;
   const [value, setValue] = useState(initial);
@@ -283,17 +296,26 @@ export function AnswerForm({ questionId, initial = "" }: { questionId: string; i
   const key = useRef<string | null>(null);
 
   useEffect(() => {
-    const saved = sessionStorage.getItem(storageKey);
-    if (saved) setValue(saved);
-    else if (initial) setValue(initial);
+    const raw = sessionStorage.getItem(storageKey);
+    let draft: { body: string; at: number } | null = null;
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { body?: string; at?: number };
+        if (typeof parsed.body === "string") draft = { body: parsed.body, at: parsed.at ?? 0 };
+      } catch {
+        if (!initial) draft = { body: raw, at: 0 };
+      }
+    }
+    if (draft && draft.at >= updatedAt) setValue(draft.body);
+    else setValue(initial);
     setReady(true);
-  }, [storageKey, initial]);
+  }, [storageKey, initial, updatedAt]);
 
   useEffect(() => {
     if (!ready) return;
-    if (value) sessionStorage.setItem(storageKey, value);
+    if (value && value !== initial) sessionStorage.setItem(storageKey, JSON.stringify({ body: value, at: Date.now() }));
     else sessionStorage.removeItem(storageKey);
-  }, [ready, storageKey, value]);
+  }, [ready, storageKey, value, initial]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

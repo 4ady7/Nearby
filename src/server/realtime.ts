@@ -19,7 +19,7 @@ function bus() {
 export function publish(spaceId: string, event: SpaceEvent) {
   const listeners = bus().get(spaceId);
   if (!listeners) return;
-  for (const listener of listeners) {
+  for (const listener of [...listeners]) {
     try {
       listener(event);
     } catch (error) {

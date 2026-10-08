@@ -130,7 +130,7 @@ function QuestionCard({ question }: { question: QuestionView }) {
             <span className="fine">{question.theirAnswer.authorName}</span>
             <p>{question.theirAnswer.body}</p>
           </div>
-          <AnswerForm questionId={question.id} initial={question.myAnswer.body} />
+          <AnswerForm questionId={question.id} initial={question.myAnswer.body} updatedAt={question.myAnswer.updatedAt} />
         </div>
       ) : question.myAnswer ? (
         <div className="stack">
@@ -139,7 +139,7 @@ function QuestionCard({ question }: { question: QuestionView }) {
             <p>{question.myAnswer.body}</p>
           </div>
           <p className="hint">You answered. Theirs can arrive whenever.</p>
-          <AnswerForm questionId={question.id} initial={question.myAnswer.body} />
+          <AnswerForm questionId={question.id} initial={question.myAnswer.body} updatedAt={question.myAnswer.updatedAt} />
         </div>
       ) : (
         <div className="stack">

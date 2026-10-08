@@ -29,10 +29,24 @@ export async function GET() {
         }
       };
       send(": ready\n\n");
+      const stillHere = () => {
+        const current = getSpaceContext(session.user.id);
+        return Boolean(current && current.spaceId === ctx.spaceId);
+      };
       const unsubscribe = subscribe(ctx.spaceId, (event) => {
+        if (!stillHere()) {
+          close();
+          return;
+        }
         send(`data: ${JSON.stringify(event)}\n\n`);
       });
-      const ping = setInterval(() => send(": ping\n\n"), 25_000);
+      const ping = setInterval(() => {
+        if (!stillHere()) {
+          close();
+          return;
+        }
+        send(": ping\n\n");
+      }, 25_000);
       close = () => {
         clearInterval(ping);
         unsubscribe();

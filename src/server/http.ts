@@ -65,9 +65,12 @@ export async function readJson(req: Request) {
 }
 
 export function clientKey(req: Request) {
-  const forwarded = req.headers.get("x-forwarded-for");
-  const ip = (forwarded ? forwarded.split(",")[0] : req.headers.get("x-real-ip"))?.trim() || "local";
-  return ip.slice(0, 80);
+  if (process.env.BETWEEN_TRUST_PROXY === "1") {
+    const forwarded = req.headers.get("x-forwarded-for");
+    const ip = (forwarded ? forwarded.split(",")[0] : req.headers.get("x-real-ip"))?.trim();
+    if (ip) return ip.slice(0, 80);
+  }
+  return "direct";
 }
 
 export function enforceRate(key: string, limit: number, windowMs: number) {
@@ -90,7 +93,13 @@ export function enforceRate(key: string, limit: number, windowMs: number) {
 
 type Idempotent = { status: number; body: unknown };
 
-export async function withIdempotency(userId: string, req: Request, path: string, fn: () => Promise<Idempotent> | Idempotent) {
+export async function withIdempotency(
+  userId: string,
+  req: Request,
+  path: string,
+  fn: () => Promise<Idempotent> | Idempotent,
+  allowStaleRetry = true,
+) {
   const key = req.headers.get("idempotency-key")?.trim() || "";
   if (!key) return fn();
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(key)) {
@@ -111,10 +120,25 @@ export async function withIdempotency(userId: string, req: Request, path: string
       key,
       userId,
     );
-    if (!existing || existing.status === 0) {
+    if (!existing) throw new HttpError(409, "That didn't land. Try again.", "IN_PROGRESS");
+    if (existing.status === 0) {
+      const stale = one<{ created_at: number }>(
+        "SELECT created_at FROM idempotency_keys WHERE key = ? AND user_id = ?",
+        key,
+        userId,
+      );
+      if (allowStaleRetry && stale && Date.now() - stale.created_at > 3 * 60_000) {
+        run("DELETE FROM idempotency_keys WHERE key = ? AND user_id = ? AND status = 0", key, userId);
+        return withIdempotency(userId, req, path, fn, false);
+      }
       throw new HttpError(409, "That's already sending.", "IN_PROGRESS");
     }
-    return { status: existing.status, body: JSON.parse(existing.response) as unknown, replay: true };
+    try {
+      return { status: existing.status, body: JSON.parse(existing.response) as unknown, replay: true };
+    } catch {
+      run("DELETE FROM idempotency_keys WHERE key = ? AND user_id = ?", key, userId);
+      throw new HttpError(409, "That didn't land. Try again.", "IN_PROGRESS");
+    }
   }
   try {
     const result = await fn();

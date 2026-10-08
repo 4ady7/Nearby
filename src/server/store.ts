@@ -7,7 +7,7 @@ import {
   presenceById,
   signalById,
 } from "@/lib/constants";
-import { formatCode, initial, normalizeCode, presenceFreshness, randomFromAlphabet } from "@/lib/text";
+import { cleanText, formatCode, initial, normalizeCode, presenceFreshness, randomFromAlphabet } from "@/lib/text";
 import type {
   Cursor,
   FeedItem,
@@ -119,14 +119,15 @@ export type SpaceContext = {
 };
 
 function person(row: { id: string; display_name: string; color: string }): Person {
-  return { id: row.id, displayName: row.display_name, color: row.color, initial: initial(row.display_name) };
+  const displayName = cleanText(row.display_name);
+  return { id: row.id, displayName, color: row.color, initial: initial(displayName) };
 }
 
 function authorBits(authorId: string | null, snapshot: string, members: MemberRow[], meId: string) {
   const member = authorId ? members.find((m) => m.id === authorId) : undefined;
   return {
     authorId,
-    authorName: member?.display_name ?? snapshot,
+    authorName: cleanText(member?.display_name ?? snapshot),
     authorColor: member?.color ?? "clay",
     mine: authorId === meId,
   };
@@ -727,7 +728,7 @@ export function updateProfile(userId: string, displayName: string, color: string
   return publicMe(userId);
 }
 
-export async function changePassword(userId: string, currentPassword: string, nextPassword: string) {
+export async function changePassword(userId: string, sessionId: string, currentPassword: string, nextPassword: string) {
   const user = getUser(userId);
   if (!(await verifySecret(currentPassword, user.password_hash))) {
     throw new HttpError(400, "That password doesn't match.", "VALIDATION");
@@ -735,7 +736,11 @@ export async function changePassword(userId: string, currentPassword: string, ne
   if (currentPassword === nextPassword) {
     throw new HttpError(400, "Choose a different password.", "VALIDATION");
   }
-  run("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", await hashSecret(nextPassword), Date.now(), userId);
+  const passwordHash = await hashSecret(nextPassword);
+  tx(() => {
+    run("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", passwordHash, Date.now(), userId);
+    run("DELETE FROM sessions WHERE user_id = ? AND id != ?", userId, sessionId);
+  });
   return { ok: true };
 }
 
@@ -856,6 +861,7 @@ export function leaveSpace(userId: string) {
   let files: string[] = [];
   tx(() => {
     if (alone) files = collectMedia(ctx.spaceId);
+    run("DELETE FROM notifications WHERE user_id = ? AND space_id = ?", userId, ctx.spaceId);
     run("DELETE FROM space_members WHERE user_id = ?", userId);
     run("DELETE FROM presence WHERE user_id = ?", userId);
     if (alone) run("DELETE FROM spaces WHERE id = ?", ctx.spaceId);
@@ -1344,7 +1350,8 @@ export function clearPresence(userId: string) {
 }
 
 export function getMediaForMember(userId: string, mediaId: string) {
-  const ctx = requireSpace(userId);
+  const ctx = getSpaceContext(userId);
+  if (!ctx) throw new HttpError(404, "That file isn't available.", "NOT_FOUND");
   const media = one<{ storage_name: string; mime: string; size: number }>(
     "SELECT storage_name, mime, size FROM media WHERE id = ? AND space_id = ?",
     mediaId,

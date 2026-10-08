@@ -33,7 +33,7 @@ export async function api<T>(
   try {
     response = await fetch(path, { ...init, headers, body });
   } catch {
-    throw new ApiError("You seem to be offline. Nothing was lost.", 0, "OFFLINE");
+    throw new ApiError("You seem to be offline. If it went through, it will be here when you're back. If it didn't, try again.", 0, "OFFLINE");
   }
 
   const text = await response.text();

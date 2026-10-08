@@ -72,6 +72,21 @@ async function main() {
   const health = await call(null, "/api/health");
   record("health", health.status === 200, String(health.status));
 
+  const rateStatuses = [];
+  for (let i = 0; i < 9; i++) {
+    const attempt = await call(null, "/api/auth/sign-in", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": `10.8.8.${i}` },
+      body: JSON.stringify({ email: "rate-probe@between.test", password: "wrong-password" }),
+    });
+    rateStatuses.push(attempt.status);
+  }
+  record(
+    "sign-in limit ignores spoofed client address",
+    rateStatuses.slice(0, 8).every((status) => status === 401) && rateStatuses[8] === 429,
+    rateStatuses.join(","),
+  );
+
   const blocked = await call(null, "/api/auth/sign-in", {
     method: "POST",
     origin: "https://evil.example",
@@ -219,7 +234,9 @@ async function main() {
     headers: { "content-type": "application/json", "idempotency-key": `note-${stamp}` },
     body: JSON.stringify({ kind: "note", body: "a different note" }),
   });
-  record("idempotent replay does not create a second note", replay.data?.created === false && replay.data?.moment?.id === momentId, `created=${replay.data?.created} idMatch=${replay.data?.moment?.id === momentId}`);
+  const afterReplay = await call(bea.store, "/api/moments");
+  const copies = (afterReplay.data?.items || []).filter((item) => item.id === momentId).length;
+  record("idempotent replay returns the same note", replay.data?.moment?.id === momentId && copies === 1, `idMatch=${replay.data?.moment?.id === momentId} copies=${copies}`);
 
   const stolen = await call(cy.store, "/api/moments");
   record("outsider cannot list this space moments", stolen.status === 409 || stolen.status === 401, String(stolen.status));
@@ -238,7 +255,7 @@ async function main() {
     headers: { "idempotency-key": `png-${stamp}` },
     body: form,
   });
-  const mediaId = uploaded.data?.moment?.mediaId;
+  const mediaId = String(uploaded.data?.moment?.mediaUrl || "").split("/").pop() || "";
   record("png upload", (uploaded.status === 201 || uploaded.status === 200) && Boolean(mediaId), `${uploaded.status} media=${mediaId}`);
 
   const svg = new FormData();
@@ -320,7 +337,7 @@ async function main() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ displayName: "Ada\u202Ebea", color: "sage" }),
   });
-  const bidiName = bidi.data?.displayName || "";
+  const bidiName = bidi.data?.user?.displayName || "";
   record("bidi override stripped from name", !bidiName.includes("\u202E"), JSON.stringify(bidiName));
 
   const sessionB = jar();
@@ -358,11 +375,27 @@ async function main() {
   const adaStill = await call(ada.store, "/api/moments");
   record("remaining person keeps the moment", (adaStill.data?.items || []).some((item) => item.id === momentId), `count=${adaStill.data?.items?.length}`);
 
-  await call(ada.store, `/api/moments/${momentId}`, { method: "DELETE" });
+  const own = await call(ada.store, "/api/moments", {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": `own-${stamp}` },
+    body: JSON.stringify({ kind: "note", body: "mine to remove" }),
+  });
+  const ownId = own.data?.moment?.id;
+  const ownForm = new FormData();
+  ownForm.set("kind", "photo");
+  ownForm.set("file", new File([png], "mine.png", { type: "image/png" }));
+  const ownPhoto = await call(ada.store, "/api/moments", {
+    method: "POST",
+    headers: { "idempotency-key": `ownpng-${stamp}` },
+    body: ownForm,
+  });
+  const ownMedia = String(ownPhoto.data?.moment?.mediaUrl || "").split("/").pop() || "";
+  await call(ada.store, `/api/moments/${ownId}`, { method: "DELETE" });
+  if (ownMedia) await call(ada.store, `/api/moments/${ownPhoto.data?.moment?.id}`, { method: "DELETE" });
   const gone = await call(ada.store, "/api/moments");
-  record("deleted moment stays deleted", !(gone.data?.items || []).some((item) => item.id === momentId));
-  if (mediaId) {
-    const mediaGone = await call(ada.store, `/api/media/${mediaId}`);
+  record("deleted moment stays deleted", ownId && !(gone.data?.items || []).some((item) => item.id === ownId));
+  if (ownMedia) {
+    const mediaGone = await call(ada.store, `/api/media/${ownMedia}`);
     record("deleted media stays gone", mediaGone.status === 404, String(mediaGone.status));
   }
 

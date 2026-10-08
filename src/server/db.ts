@@ -243,9 +243,34 @@ function housekeeping(db: DatabaseSync) {
   db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(now);
   db.prepare("DELETE FROM idempotency_keys WHERE created_at < ? OR (status = 0 AND created_at < ?)").run(
     now - 24 * 3_600_000,
-    now - 2 * 60_000,
+    now - 3 * 60_000,
   );
   db.prepare("DELETE FROM rate_limits WHERE window_start < ?").run(now - 24 * 3_600_000);
+  sweepOrphanUploads(db, now);
+}
+
+function sweepOrphanUploads(db: DatabaseSync, now: number) {
+  const dir = uploadsDir();
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  const known = new Set(
+    (db.prepare("SELECT storage_name FROM media").all() as Array<{ storage_name: string }>).map((row) => row.storage_name),
+  );
+  const safe = /^[a-f0-9]{32}\.(jpg|png|gif|webp|webm|mp3|m4a|wav|ogg|mp4|mov)$/;
+  for (const name of names) {
+    if (!safe.test(name) || known.has(name)) continue;
+    try {
+      const full = path.join(dir, name);
+      if (fs.statSync(full).mtimeMs > now - 60 * 60_000) continue;
+      fs.unlinkSync(full);
+    } catch {
+      /* still being written, or already gone */
+    }
+  }
 }
 
 export function tx<T>(fn: () => T): T {
